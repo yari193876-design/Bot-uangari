@@ -1,0 +1,6 @@
+{
+  "name": "Asisten Pencatat Keuangan Telegram",
+  "description": "Asisten pencatat keuangan pribadi via Telegram dengan ekstraksi otomatis pemasukan/pengeluaran, sinkronisasi Google Sheets, perintah edit transaksi via chat, rekap harian, dan database transaksi.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,11 @@
+[
+  {
+    "id": "tx-1788540559857-r9tq",
+    "type": "pengeluaran",
+    "amount": 40000,
+    "description": "Bensin pertamax",
+    "category": "Transportasi",
+    "timestamp": "2026-09-04T16:49:19.857Z",
+    "rawMessage": "beli bensin motor 35000"
+  }
+]
