@@ -38,25 +38,44 @@ export function getServiceAccountCredentials(): ServiceAccountCredentials | null
           private_key: parsed.private_key,
           project_id: parsed.project_id,
         };
+      } else {
+        console.error(
+          '[Google Sheets Auth] GOOGLE_SERVICE_ACCOUNT_KEY tidak memiliki atribut "client_email" atau "private_key" yang valid.'
+        );
       }
     } catch (e) {
-      console.warn('[Google Sheets] Gagal mem-parse GOOGLE_SERVICE_ACCOUNT_KEY:', e);
+      console.error('[Google Sheets Auth] Gagal mem-parse JSON dari GOOGLE_SERVICE_ACCOUNT_KEY:', e);
     }
   }
 
   // 2. Check GOOGLE_APPLICATION_CREDENTIALS path
-  if (process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
-    try {
-      const content = fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf-8');
-      const parsed = JSON.parse(content);
-      if (parsed.client_email && parsed.private_key) {
-        return {
-          client_email: parsed.client_email,
-          private_key: parsed.private_key,
-          project_id: parsed.project_id,
-        };
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    if (!fs.existsSync(process.env.GOOGLE_APPLICATION_CREDENTIALS)) {
+      console.error(
+        `[Google Sheets Auth] File kredensial tidak ditemukan di path GOOGLE_APPLICATION_CREDENTIALS: ${process.env.GOOGLE_APPLICATION_CREDENTIALS}`
+      );
+    } else {
+      try {
+        const content = fs.readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (parsed.client_email && parsed.private_key) {
+          return {
+            client_email: parsed.client_email,
+            private_key: parsed.private_key,
+            project_id: parsed.project_id,
+          };
+        } else {
+          console.error(
+            `[Google Sheets Auth] Berkas ${process.env.GOOGLE_APPLICATION_CREDENTIALS} tidak memiliki atribut client_email atau private_key.`
+          );
+        }
+      } catch (e) {
+        console.error(
+          `[Google Sheets Auth] Gagal membaca berkas di path GOOGLE_APPLICATION_CREDENTIALS (${process.env.GOOGLE_APPLICATION_CREDENTIALS}):`,
+          e
+        );
       }
-    } catch (_) {}
+    }
   }
 
   // 3. Check workspace root service-account.json
@@ -71,9 +90,13 @@ export function getServiceAccountCredentials(): ServiceAccountCredentials | null
           private_key: parsed.private_key,
           project_id: parsed.project_id,
         };
+      } else {
+        console.error(
+          '[Google Sheets Auth] File service-account.json ditemukan di root tetapi tidak memiliki "client_email" atau "private_key".'
+        );
       }
     } catch (e) {
-      console.warn('[Google Sheets] Gagal membaca service-account.json:', e);
+      console.error('[Google Sheets Auth] Gagal membaca atau mem-parse file service-account.json:', e);
     }
   }
 
@@ -95,7 +118,10 @@ export function getServiceAccountEmail(): string | null {
 export async function getServiceAccountAccessToken(): Promise<string> {
   const creds = getServiceAccountCredentials();
   if (!creds) {
-    throw new Error('Kredensial Google Service Account tidak ditemukan.');
+    const errMsg =
+      '[Google Sheets Auth Gagal] Kredensial Google Service Account tidak ditemukan! Pastikan file "service-account.json" ada di root proyek atau variabel GOOGLE_SERVICE_ACCOUNT_KEY telah diisi.';
+    console.error(errMsg);
+    throw new Error(errMsg);
   }
 
   // Check cached token (reuse if more than 2 minutes remain)
@@ -125,18 +151,27 @@ export async function getServiceAccountAccessToken(): Promise<string> {
   const signature = sign.sign(creds.private_key, 'base64url');
   const jwt = `${signInput}.${signature}`;
 
-  const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-      assertion: jwt,
-    }),
-  });
+  let tokenRes: Response;
+  try {
+    tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: jwt,
+      }),
+    });
+  } catch (netErr: any) {
+    const netErrMsg = `[Google Sheets Auth Gagal] Terjadi kesalahan jaringan saat meminta access token ke oauth2.googleapis.com: ${netErr?.message || netErr}`;
+    console.error(netErrMsg);
+    throw new Error(netErrMsg);
+  }
 
   if (!tokenRes.ok) {
     const errText = await tokenRes.text();
-    throw new Error(`Gagal mendapatkan Google Access Token (${tokenRes.status}): ${errText}`);
+    const authErrMsg = `[Google Sheets Auth Gagal] Autentikasi Google OAuth2 ditolak (Status ${tokenRes.status}) untuk email "${creds.client_email}": ${errText}`;
+    console.error(authErrMsg);
+    throw new Error(authErrMsg);
   }
 
   const tokenData = (await tokenRes.json()) as { access_token: string; expires_in: number };
@@ -187,13 +222,15 @@ export async function syncAllTransactionsToSheets(
 
   if (!metaRes.ok) {
     const errBody = await metaRes.text();
+    const email = getServiceAccountEmail() || 'Service Account';
     if (metaRes.status === 403 || metaRes.status === 404) {
-      const email = getServiceAccountEmail() || 'Service Account';
-      throw new Error(
-        `Akses ditolak ke Spreadsheet (${metaRes.status}). Pastikan Spreadsheet sudah di-share (Bagikan) ke email Service Account: ${email} sebagai Editor.`
-      );
+      const errMsg = `[Google Sheets API Error ${metaRes.status}] Akses ditolak ke Spreadsheet ID "${spreadsheetId}". Solusi: Buka Google Spreadsheet di browser, klik tombol 'Bagikan' (Share), lalu tambahkan email Service Account ini: "${email}" dengan role Editor!`;
+      console.error(errMsg);
+      throw new Error(errMsg);
     }
-    throw new Error(`Gagal membaca metadata Spreadsheet (${metaRes.status}): ${errBody}`);
+    const errMsg = `[Google Sheets API Error ${metaRes.status}] Gagal membaca metadata Spreadsheet "${spreadsheetId}": ${errBody}`;
+    console.error(errMsg);
+    throw new Error(errMsg);
   }
 
   const meta = (await metaRes.json()) as {
@@ -302,7 +339,9 @@ export async function syncAllTransactionsToSheets(
 
   if (!writeRes.ok) {
     const errText = await writeRes.text();
-    throw new Error(`Gagal menulis data ke Google Sheet (${writeRes.status}): ${errText}`);
+    const errMsg = `[Google Sheets API Error ${writeRes.status}] Gagal menulis baris data ke Google Sheet "${spreadsheetId}": ${errText}`;
+    console.error(errMsg);
+    throw new Error(errMsg);
   }
 
   // 6. Apply visual formatting & currency styling via batchUpdate (non-blocking)

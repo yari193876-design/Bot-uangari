@@ -33,15 +33,43 @@ const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 export const TARGET_SPREADSHEET_ID = "1w7BDRLWI9qHFL0FJxrvBPEbDkifDOCJdvVlr_c5PM_A";
 export const TARGET_SPREADSHEET_URL = `https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}/edit`;
 
+/**
+ * Extract clean 44-character Spreadsheet ID if user provides a full Google Sheets URL
+ */
+export function extractSpreadsheetId(input: string): string {
+  if (!input) return "";
+  const trimmed = input.trim();
+  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  if (match && match[1]) {
+    return match[1];
+  }
+  return trimmed;
+}
+
 export function getActiveSpreadsheetId(): string {
-  if (process.env.GOOGLE_SHEETS_SPREADSHEET_ID) return process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+  // 1. Prioritaskan environment variable SPREADSHEET_ID
+  if (process.env.SPREADSHEET_ID && process.env.SPREADSHEET_ID.trim()) {
+    return extractSpreadsheetId(process.env.SPREADSHEET_ID);
+  }
+  // 2. Cek environment variable GOOGLE_SHEETS_SPREADSHEET_ID
+  if (process.env.GOOGLE_SHEETS_SPREADSHEET_ID && process.env.GOOGLE_SHEETS_SPREADSHEET_ID.trim()) {
+    return extractSpreadsheetId(process.env.GOOGLE_SHEETS_SPREADSHEET_ID);
+  }
+  // 3. Cek pengaturan tersimpan di settings.json
   try {
     if (fs.existsSync(SETTINGS_FILE)) {
       const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
-      if (parsed.spreadsheetId) return parsed.spreadsheetId;
+      if (parsed.spreadsheetId && typeof parsed.spreadsheetId === "string" && parsed.spreadsheetId.trim()) {
+        return extractSpreadsheetId(parsed.spreadsheetId);
+      }
     }
   } catch (_) {}
+  // 4. Default spreadsheet ID
   return TARGET_SPREADSHEET_ID;
+}
+
+export function getActiveSpreadsheetUrl(): string {
+  return `https://docs.google.com/spreadsheets/d/${getActiveSpreadsheetId()}/edit`;
 }
 
 export function setActiveSpreadsheetId(id: string) {
@@ -1512,6 +1540,46 @@ async function startServer() {
     processedUpdatesCount: 0,
   };
 
+  // Deduplication cache to prevent duplicate processing from network retries or multiple listeners
+  const processedUpdateIds = new Set<number>();
+  const processedMessageKeys = new Set<string>(); // `${chatId}:${messageId}`
+  const updateIdTimestamps: { id: number; time: number }[] = [];
+  const messageKeyTimestamps: { key: string; time: number }[] = [];
+
+  function isUpdateAlreadyProcessed(updateId?: number): boolean {
+    if (!updateId) return false;
+    return processedUpdateIds.has(updateId);
+  }
+
+  function isMessageAlreadyProcessed(chatId?: number | string, messageId?: number | string): boolean {
+    if (!chatId || !messageId) return false;
+    return processedMessageKeys.has(`${chatId}:${messageId}`);
+  }
+
+  function markUpdateProcessed(updateId?: number, chatId?: number | string, messageId?: number | string) {
+    const now = Date.now();
+    if (updateId) {
+      processedUpdateIds.add(updateId);
+      updateIdTimestamps.push({ id: updateId, time: now });
+    }
+    if (chatId && messageId) {
+      const key = `${chatId}:${messageId}`;
+      processedMessageKeys.add(key);
+      messageKeyTimestamps.push({ key, time: now });
+    }
+
+    // Clean up items older than 10 minutes to prevent memory accumulation
+    const tenMinutesAgo = now - 10 * 60 * 1000;
+    while (updateIdTimestamps.length > 0 && updateIdTimestamps[0].time < tenMinutesAgo) {
+      const oldest = updateIdTimestamps.shift();
+      if (oldest) processedUpdateIds.delete(oldest.id);
+    }
+    while (messageKeyTimestamps.length > 0 && messageKeyTimestamps[0].time < tenMinutesAgo) {
+      const oldest = messageKeyTimestamps.shift();
+      if (oldest) processedMessageKeys.delete(oldest.key);
+    }
+  }
+
   async function sendTelegramReply(chatId: number | string, text: string) {
     try {
       const sendUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
@@ -1545,18 +1613,29 @@ async function startServer() {
   let lastUpdateId = 0;
   let isPolling = false;
   let pollingAbortController: AbortController | null = null;
+  let pollingInstanceCounter = 0;
 
   async function startTelegramPolling() {
     if (isWebhookMode) {
       console.log("[Telegram] Mode Webhook aktif, long polling dinonaktifkan.");
       return;
     }
-    if (isPolling) return;
+
+    // Batalkan sesi polling sebelumnya jika ada yang masih aktif untuk mencegah listener ganda
+    if (isPolling) {
+      console.log("[Telegram] Membatalkan sesi polling sebelumnya untuk mencegah listener ganda...");
+      if (pollingAbortController) {
+        try { pollingAbortController.abort(); } catch (_) {}
+      }
+      isPolling = false;
+    }
+
+    const currentSessionId = ++pollingInstanceCounter;
     isPolling = true;
     telegramBotState.pollingActive = true;
-    console.log("[Telegram 24/7] Long polling aktif & diawasi Watchdog Supervisor untuk @Hahaha_uangbot...");
+    console.log(`[Telegram 24/7] Long polling aktif (sesi #${currentSessionId}) untuk @${telegramBotState.botInfo?.username || "bot"}...`);
 
-    while (isPolling && !isWebhookMode) {
+    while (isPolling && !isWebhookMode && currentSessionId === pollingInstanceCounter) {
       try {
         telegramBotState.lastPolledAt = new Date().toISOString();
         pollingAbortController = new AbortController();
@@ -1565,6 +1644,10 @@ async function startServer() {
         const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=20`;
         const response = await fetch(url, { signal: pollingAbortController.signal });
         clearTimeout(timeoutId);
+
+        if (currentSessionId !== pollingInstanceCounter || !isPolling) {
+          break;
+        }
 
         if (!response.ok) {
           console.error(`[Telegram] getUpdates HTTP status: ${response.status}`);
@@ -1575,7 +1658,6 @@ async function startServer() {
         const data: any = await response.json();
         if (!data.ok) {
           telegramBotState.lastError = data.description || "Polling error";
-          // If conflict (e.g. webhook was active elsewhere), wait briefly
           await new Promise((resolve) => setTimeout(resolve, 3000));
           continue;
         }
@@ -1583,18 +1665,32 @@ async function startServer() {
         telegramBotState.lastError = null;
         const updates = data.result || [];
         for (const update of updates) {
+          if (currentSessionId !== pollingInstanceCounter) break;
+
           lastUpdateId = Math.max(lastUpdateId, update.update_id);
-          telegramBotState.processedUpdatesCount++;
+
+          // Cegah respon ganda dengan validasi update_id
+          if (isUpdateAlreadyProcessed(update.update_id)) {
+            continue;
+          }
 
           const messageObj = update.message || update.edited_message;
           if (!messageObj) continue;
 
           const text = messageObj.text;
           const chatId = messageObj.chat?.id;
+          const messageId = messageObj.message_id;
           const fromUser = messageObj.from?.first_name || "User";
 
+          // Cegah respon ganda dengan validasi chat_id + message_id
+          if (chatId && messageId && isMessageAlreadyProcessed(chatId, messageId)) {
+            continue;
+          }
+
           if (text && chatId) {
-            console.log(`[Telegram] Pesan masuk dari ${fromUser} (${chatId}): "${text}"`);
+            markUpdateProcessed(update.update_id, chatId, messageId);
+            telegramBotState.processedUpdatesCount++;
+            console.log(`[Telegram Polling] Pesan masuk dari ${fromUser} (${chatId}): "${text}"`);
             const result = await processMessage(text);
             await sendTelegramReply(chatId, result.reply);
           }
@@ -1605,6 +1701,10 @@ async function startServer() {
         }
         await new Promise((resolve) => setTimeout(resolve, 2000));
       }
+    }
+
+    if (currentSessionId === pollingInstanceCounter) {
+      telegramBotState.pollingActive = false;
     }
   }
 
@@ -1617,7 +1717,7 @@ async function startServer() {
     const lastPolled = telegramBotState.lastPolledAt ? new Date(telegramBotState.lastPolledAt).getTime() : 0;
     const diff = now - lastPolled;
 
-    // Jika polling tidak update dalam 45 detik, lakukan recovery
+    // Jika polling tidak update dalam 45 detik, batalkan sesi lama dan restart secara bersih
     if (diff > 45000) {
       console.warn(`[Watchdog 24/7] Polling tidak merespons selama ${Math.round(diff / 1000)}s. Melakukan auto-revive...`);
       watchdogRestartCount++;
@@ -1625,6 +1725,7 @@ async function startServer() {
         try {
           pollingAbortController.abort();
         } catch (_) {}
+        pollingAbortController = null;
       }
       isPolling = false;
       startTelegramPolling();
@@ -1635,7 +1736,6 @@ async function startServer() {
   setInterval(async () => {
     try {
       keepAliveCount++;
-      // internal health ping
       const res = await fetch(`http://127.0.0.1:${PORT}/api/health`);
       if (!res.ok) {
         console.warn("[Keep-Alive 24/7] Health check response:", res.status);
@@ -1647,6 +1747,16 @@ async function startServer() {
 
   async function initTelegramBot() {
     if (!TELEGRAM_BOT_TOKEN) return;
+
+    // Pastikan listener/polling lama dibatalkan sepenuhnya sebelum inisialisasi ulang
+    isPolling = false;
+    telegramBotState.pollingActive = false;
+    if (pollingAbortController) {
+      try {
+        pollingAbortController.abort();
+      } catch (_) {}
+      pollingAbortController = null;
+    }
 
     try {
       const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe`);
@@ -1675,7 +1785,7 @@ async function startServer() {
           // ignore
         }
 
-        // Remove any stale webhook to allow long polling
+        // Remove any stale webhook to ensure no conflicting webhook delivery exists
         try {
           await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=false`);
         } catch (e) {
@@ -1745,10 +1855,12 @@ async function startServer() {
         return res.status(400).json({ ok: false, error: "URL webhook wajib HTTPS yang valid" });
       }
 
-      // Stop polling before setting webhook
+      // Stop polling before setting webhook to avoid conflicting listeners
       isPolling = false;
+      telegramBotState.pollingActive = false;
       if (pollingAbortController) {
         try { pollingAbortController.abort(); } catch (_) {}
+        pollingAbortController = null;
       }
 
       const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook?url=${encodeURIComponent(url)}&drop_pending_updates=false`);
@@ -1770,11 +1882,20 @@ async function startServer() {
 
   app.post("/api/telegram/webhook/delete", async (_req, res) => {
     try {
+      // Hapus webhook di Telegram
       const tgRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=false`);
       const tgData: any = await tgRes.json();
 
       isWebhookMode = false;
       configuredWebhookUrl = null;
+
+      // Hentikan listener lama sebelum mengaktifkan polling baru
+      isPolling = false;
+      if (pollingAbortController) {
+        try { pollingAbortController.abort(); } catch (_) {}
+        pollingAbortController = null;
+      }
+
       startTelegramPolling();
 
       res.json({ ok: true, message: "Webhook dihapus, mode Long Polling 24/7 aktif kembali.", tgData });
@@ -1783,27 +1904,49 @@ async function startServer() {
     }
   });
 
-  // Telegram Webhook Receiver
-  app.post("/api/telegram-webhook", async (req, res) => {
-    try {
-      const update = req.body;
-      const messageObj = update?.message || update?.edited_message;
-      const message = messageObj?.text;
-      const chatId = messageObj?.chat?.id;
-      const fromUser = messageObj?.from?.first_name || "User";
+  // Telegram Webhook Receiver:
+  // 1. Kirim respon HTTP 200 OK langsung ke Telegram di awal proses agar Telegram tidak melakukan retry/mengirim ulang request!
+  // 2. Cegah duplicate response dengan pengecekan update_id dan message_id yang diproses secara asinkron.
+  app.post("/api/telegram-webhook", (req, res) => {
+    // Segera kirim HTTP 200 OK ke Telegram (< 50ms)
+    res.status(200).json({ ok: true });
 
-      if (message && chatId) {
-        telegramBotState.processedUpdatesCount++;
-        console.log(`[Telegram Webhook] Pesan dari ${fromUser} (${chatId}): "${message}"`);
-        const result = await processMessage(message);
-        await sendTelegramReply(chatId, result.reply);
+    // Lakukan pemrosesan pesan dan pencatatan transaksi secara asinkron di latar belakang
+    (async () => {
+      try {
+        const update = req.body;
+        if (!update) return;
+
+        const updateId = update.update_id;
+        if (updateId && isUpdateAlreadyProcessed(updateId)) {
+          console.log(`[Telegram Webhook] Mengabaikan update duplikat (update_id: ${updateId})`);
+          return;
+        }
+
+        const messageObj = update?.message || update?.edited_message;
+        if (!messageObj) return;
+
+        const message = messageObj.text;
+        const chatId = messageObj.chat?.id;
+        const messageId = messageObj.message_id;
+        const fromUser = messageObj.from?.first_name || "User";
+
+        if (chatId && messageId && isMessageAlreadyProcessed(chatId, messageId)) {
+          console.log(`[Telegram Webhook] Mengabaikan pesan duplikat (chat: ${chatId}, message_id: ${messageId})`);
+          return;
+        }
+
+        if (message && chatId) {
+          markUpdateProcessed(updateId, chatId, messageId);
+          telegramBotState.processedUpdatesCount++;
+          console.log(`[Telegram Webhook] Pesan dari ${fromUser} (${chatId}): "${message}"`);
+          const result = await processMessage(message);
+          await sendTelegramReply(chatId, result.reply);
+        }
+      } catch (webhookErr) {
+        console.error("[Telegram Webhook Processing Error]:", webhookErr);
       }
-
-      res.json({ ok: true });
-    } catch (webhookErr) {
-      console.error("Telegram webhook error:", webhookErr);
-      res.status(200).json({ ok: false });
-    }
+    })();
   });
 
   // Explicit 404 handler for unmatched /api routes so they NEVER fall through to Vite SPA / HTML index fallback
