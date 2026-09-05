@@ -481,7 +481,18 @@ function formatRekapReply(summary: ReturnType<typeof getFinancialSummary>, recen
 // Generate weekly recap (last 7 days breakdown)
 function formatRekapMingguanReply(summary: ReturnType<typeof getFinancialSummary>): string {
   const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
+  const nowWib = toWibDate(now);
+
+  // Awal hari ini (pukul 00:00:00 WIB)
+  const startOfTodayWibMs = Date.UTC(
+    nowWib.getUTCFullYear(),
+    nowWib.getUTCMonth(),
+    nowWib.getUTCDate()
+  ) - 7 * 60 * 60 * 1000;
+
+  // Hitung mundur dari awal hari (pukul 00:00:00 WIB) 6 hari yang lalu sehingga seluruh transaksi 7 hari terakhir terhitung penuh
+  const startOfSevenDaysAgoMs = startOfTodayWibMs - 6 * 24 * 60 * 60 * 1000;
+  const sevenDaysAgo = new Date(startOfSevenDaysAgoMs);
 
   const startStr = sevenDaysAgo.toLocaleDateString("id-ID", {
     timeZone: "Asia/Jakarta",
@@ -496,7 +507,7 @@ function formatRekapMingguanReply(summary: ReturnType<typeof getFinancialSummary
   });
 
   const weekTrans = transactions
-    .filter((t) => new Date(t.timestamp).getTime() >= (now.getTime() - 7 * 24 * 60 * 60 * 1000))
+    .filter((t) => new Date(t.timestamp).getTime() >= startOfSevenDaysAgoMs)
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
   let totalMasuk = 0;
