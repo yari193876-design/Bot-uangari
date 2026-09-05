@@ -1,5 +1,14 @@
 [
   {
+    "id": "tx-1788598666905-7yhf",
+    "type": "pengeluaran",
+    "amount": 25000,
+    "description": "Tes beli bensin",
+    "category": "Transportasi",
+    "timestamp": "2026-09-05T08:57:46.905Z",
+    "rawMessage": "tes 25000 beli bensin"
+  },
+  {
     "id": "tx-1788591612476-9w4n",
     "type": "pengeluaran",
     "amount": 5000,

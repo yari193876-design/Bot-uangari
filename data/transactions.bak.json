@@ -1,5 +1,14 @@
 [
   {
+    "id": "tx-1788591612476-9w4n",
+    "type": "pengeluaran",
+    "amount": 5000,
+    "description": "Beli kopi",
+    "category": "Makanan & Minuman",
+    "timestamp": "2026-09-05T07:00:12.476Z",
+    "rawMessage": "beli kopi 5rb"
+  },
+  {
     "id": "tx-1788591069975-jlo3",
     "type": "pengeluaran",
     "amount": 5000,

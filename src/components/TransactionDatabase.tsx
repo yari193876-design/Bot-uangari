@@ -45,6 +45,8 @@ interface TransactionDatabaseProps {
   spreadsheetName?: string;
   onSyncGoogleSheets?: () => void;
   isSyncingGoogleSheets?: boolean;
+  hasGoogleAuth?: boolean;
+  lastSyncTime?: Date | null;
 }
 
 export default function TransactionDatabase({
@@ -61,6 +63,8 @@ export default function TransactionDatabase({
   spreadsheetName,
   onSyncGoogleSheets,
   isSyncingGoogleSheets = false,
+  hasGoogleAuth = false,
+  lastSyncTime = null,
 }: TransactionDatabaseProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | 'pengeluaran' | 'pemasukan'>('all');
@@ -144,12 +148,26 @@ export default function TransactionDatabase({
               <h2 className="font-bold text-slate-900 text-base leading-snug">
                 Database & Google Sheets Sync
               </h2>
-              <span className="text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 px-2 py-0.5 rounded-full">
-                Live
-              </span>
+              {hasGoogleAuth ? (
+                <span className="text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span>Google Sheet Terhubung</span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={onSyncGoogleSheets}
+                  className="text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-full hover:bg-amber-100 transition-colors cursor-pointer"
+                  title="Klik untuk menghubungkan akun Google agar otomatis sinkron ke Spreadsheet"
+                >
+                  ⚠️ Login Google untuk Sinkron
+                </button>
+              )}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Tersimpan otomatis saat bot Telegram mengekstrak transaksi
+              {lastSyncTime
+                ? `Terakhir disinkronkan ke sheet: ${lastSyncTime.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} WIB`
+                : 'Tersimpan otomatis di database sistem'}
             </p>
           </div>
         </div>

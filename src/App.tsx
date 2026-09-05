@@ -53,6 +53,7 @@ export default function App() {
   const [spreadsheetName, setSpreadsheetName] = useState<string>(getSavedSpreadsheetName());
   const [isSyncingGoogleSheets, setIsSyncingGoogleSheets] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
+  const lastSyncedTxCountRef = useRef<number>(-1);
 
   // Initialize Firebase Auth listener
   useEffect(() => {
@@ -76,15 +77,26 @@ export default function App() {
       const res = await fetch('/api/transactions');
       if (res.ok) {
         const data = await res.json();
-        setTransactions(data.transactions || []);
+        const txs: Transaction[] = data.transactions || [];
+        setTransactions(txs);
         setSummary(data.summary || null);
+
+        // Auto-sync if new transactions arrived while user is authenticated with Google
+        if (authToken && spreadsheetId && txs.length > 0 && lastSyncedTxCountRef.current !== -1 && txs.length !== lastSyncedTxCountRef.current) {
+          lastSyncedTxCountRef.current = txs.length;
+          syncAllTransactionsToSheet(authToken, spreadsheetId, txs)
+            .then(() => setLastSyncTime(new Date()))
+            .catch((e) => console.warn('Background sync error:', e));
+        } else if (lastSyncedTxCountRef.current === -1 && txs.length > 0) {
+          lastSyncedTxCountRef.current = txs.length;
+        }
       }
     } catch (err) {
       console.error('Failed to load transactions:', err);
     } finally {
       if (showLoadingSpinner) setIsLoading(false);
     }
-  }, []);
+  }, [authToken, spreadsheetId]);
 
   // Fetch Telegram bot status
   const loadBotStatus = useCallback(async () => {
@@ -254,6 +266,11 @@ export default function App() {
       throw new Error(data.error || 'Gagal memperbarui transaksi');
     }
 
+    await loadData();
+    autoSyncToSheetIfConnected();
+  };
+
+  const handleChatTransactionUpdated = async () => {
     await loadData();
     autoSyncToSheetIfConnected();
   };
@@ -612,7 +629,7 @@ export default function App() {
           >
             <TelegramChat
               ref={chatRef}
-              onTransactionUpdated={loadData}
+              onTransactionUpdated={handleChatTransactionUpdated}
               onOpenGuide={() => setIsGuideModalOpen(true)}
               botStatus={botStatus}
             />
@@ -638,6 +655,8 @@ export default function App() {
               spreadsheetName={spreadsheetName}
               onSyncGoogleSheets={handleSyncGoogleSheets}
               isSyncingGoogleSheets={isSyncingGoogleSheets}
+              hasGoogleAuth={!!authToken}
+              lastSyncTime={lastSyncTime}
             />
           </div>
         </div>
