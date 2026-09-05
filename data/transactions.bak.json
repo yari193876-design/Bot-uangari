@@ -1,11 +1,56 @@
 [
   {
-    "id": "tx-1788540559857-r9tq",
+    "id": "tx-1788591069975-jlo3",
     "type": "pengeluaran",
-    "amount": 40000,
-    "description": "Bensin pertamax",
+    "amount": 5000,
+    "description": "Beli kopi",
+    "category": "Makanan & Minuman",
+    "timestamp": "2026-09-05T06:51:09.975Z",
+    "rawMessage": "Beli kopi 5rb"
+  },
+  {
+    "id": "tx-1788584237237-6rtx",
+    "type": "pengeluaran",
+    "amount": 5000,
+    "description": "Bayar parkir",
     "category": "Transportasi",
-    "timestamp": "2026-09-04T16:49:19.857Z",
-    "rawMessage": "beli bensin motor 35000"
+    "timestamp": "2026-09-05T04:57:17.237Z",
+    "rawMessage": "Bayar parkir 5rb"
+  },
+  {
+    "id": "tx-1788548547026-woey",
+    "type": "pemasukan",
+    "amount": 100000,
+    "description": "Dapat uang",
+    "category": "Pendapatan Lainnya",
+    "timestamp": "2026-09-04T19:02:27.026Z",
+    "rawMessage": "Dapat uang 100rb"
+  },
+  {
+    "id": "tx-1788548369756-bg4y",
+    "type": "pemasukan",
+    "amount": 534913,
+    "description": "Dapat uang",
+    "category": "Pendapatan Lainnya",
+    "timestamp": "2026-09-04T18:59:29.756Z",
+    "rawMessage": "Dapat uang 534913"
+  },
+  {
+    "id": "tx-1788547826841-6za6",
+    "type": "pemasukan",
+    "amount": 290603,
+    "description": "Dapat uang",
+    "category": "Pendapatan Lainnya",
+    "timestamp": "2026-09-04T18:50:26.841Z",
+    "rawMessage": "Dapat uang 290603"
+  },
+  {
+    "id": "tx-1788547698088-4c2i",
+    "type": "pemasukan",
+    "amount": 177518,
+    "description": "Dapat uang",
+    "category": "Pendapatan Lainnya",
+    "timestamp": "2026-09-04T18:48:18.088Z",
+    "rawMessage": "Dapat uang 177518"
   }
 ]

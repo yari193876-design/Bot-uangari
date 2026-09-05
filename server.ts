@@ -371,9 +371,18 @@ function extractDescriptionFromText(text: string, _keywords: string[]): string {
   return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
+function toTitleCase(str: string): string {
+  if (!str) return "Transaksi";
+  return str
+    .toLowerCase()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ")
+    .trim();
+}
+
 function cleanDescription(desc: string): string {
-  if (!desc) return "Transaksi";
-  return desc.charAt(0).toUpperCase() + desc.slice(1);
+  return toTitleCase(desc);
 }
 
 function guessCategory(desc: string, type: 'pengeluaran' | 'pemasukan'): string {
@@ -811,15 +820,25 @@ async function parseWithGeminiAI(userMessage: string): Promise<any> {
   const ai = getGeminiClient();
   if (!ai) return null;
 
-  const systemPrompt = `Kamu adalah Asisten Pencatat Keuangan Pribadi via Telegram berbahasa Indonesia yang sangat ramah, teliti, dan sopan.
-Tugas kamu adalah mengekstrak data keuangan dari pesan pengguna.
-Analisis pesan pengguna dan kembalikan JSON murni dengan format:
+  const systemPrompt = `Kamu adalah parser transaksi keuangan yang akurat.
+
+TUGAS UTAMA:
+Ekstrak informasi transaksi dari pesan pengguna dan kembalikan HANYA dalam format JSON valid. Jangan pernah menghitung saldo atau membuat asumsi saldo total (saldo dihitung secara eksklusif oleh database/spreadsheet).
+
+ATURAN EKSTRAKSI:
+1. "intent": "transaction" | "rekap" | "rekap_mingguan" | "edit" | "greeting" | "other"
+2. "tipe": "pengeluaran" atau "pemasukan"
+3. "nominal": Angka murni tanpa titik/koma (misal: "5rb" -> 5000, "10k" -> 10000). Jika bukan transaksi bernilai 0.
+4. "keterangan": Ringkasan transaksi dalam Title Case (misal: "Beli Kopi", "Gaji Bulanan").
+5. "kategori": Pilih salah satu dari [Makanan & Minuman, Transportasi, Belanja, Tagihan, Lain-lain].
+
+OUTPUT FORMAT (JSON MURNI):
 {
-  "intent": "transaction" | "rekap" | "rekap_mingguan" | "edit" | "greeting" | "other",
-  "type": "pengeluaran" | "pemasukan",
-  "amount": number (dalam Rupiah penuh, contoh 25000 untuk 25rb, 1500000 untuk 1.5jt, 0 jika bukan transaksi),
-  "description": string (keterangan ringkas & jelas),
-  "category": string (contoh: Makanan & Minuman, Transportasi, Belanja, Tagihan, Gaji, Bisnis, dll)
+  "intent": "transaction",
+  "tipe": "pengeluaran",
+  "nominal": 5000,
+  "keterangan": "Beli Kopi",
+  "kategori": "Makanan & Minuman"
 }`;
 
   // Priority list: start with gemini-3.1-flash-lite (fast, highly available), fallback to gemini-3.8-flash
@@ -980,14 +999,23 @@ async function processMessage(userMessage: string): Promise<{
       return { reply: formatGreetingReply() };
     }
 
-    if (parsedJson.intent === "transaction" && parsedJson.amount > 0) {
-      const txType = parsedJson.type === "pemasukan" ? "pemasukan" : "pengeluaran";
+    const rawAmount = Number(parsedJson.nominal ?? parsedJson.amount ?? 0);
+    const isTx = (parsedJson.intent === "transaction" || (!parsedJson.intent && rawAmount > 0)) && rawAmount > 0;
+
+    if (isTx) {
+      const rawType = (parsedJson.tipe || parsedJson.type || "pengeluaran").toLowerCase();
+      const txType = rawType.includes("masuk") ? "pemasukan" : "pengeluaran";
+      const rawDesc = parsedJson.keterangan || parsedJson.description || "Transaksi";
+      const description = toTitleCase(rawDesc);
+      const rawCategory = parsedJson.kategori || parsedJson.category;
+      const category = rawCategory && rawCategory.trim() ? rawCategory.trim() : guessCategory(description, txType);
+
       const newTransaction: StoredTransaction = {
         id: "tx-" + Date.now() + "-" + Math.random().toString(36).substring(2, 6),
         type: txType,
-        amount: Math.round(parsedJson.amount),
-        description: cleanDescription(parsedJson.description || "Transaksi"),
-        category: parsedJson.category || guessCategory(parsedJson.description || "", txType),
+        amount: Math.round(rawAmount),
+        description,
+        category,
         timestamp: new Date().toISOString(),
         rawMessage: userMessage,
       };

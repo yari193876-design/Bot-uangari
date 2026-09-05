@@ -596,6 +596,83 @@ export default function TelegramBotGuideModal({
                   <span className="font-semibold text-slate-800 block">💡 Tips Akses Cepat:</span>
                   <p>Setelah terhubung, klik tombol <strong>"Buka Google Sheet"</strong> kapan saja untuk langsung melihat spreadsheet online Anda di tab baru Google Docs.</p>
                 </div>
+
+                {/* Script Google Apps Script (GAS) dengan Lock & Cache */}
+                <div className="p-4 bg-slate-900 text-slate-100 rounded-2xl text-xs space-y-3 shadow-inner">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Terminal className="w-4 h-4 text-emerald-400" />
+                      <span className="font-bold text-slate-100">Script Google Apps Script (GAS) Anti-Duplikat</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        copyToClipboard(
+`function doPost(e) {
+  var lock = LockService.getScriptLock();
+  // Kunci eksekusi selama 1 detik untuk mencegah bentrokan request simultan
+  if (!lock.tryLock(1000)) {
+    return ContentService.createTextOutput("OK");
+  }
+
+  try {
+    var contents = JSON.parse(e.postData.contents);
+    var messageObj = contents.message || contents.edited_message;
+    if (!messageObj || !messageObj.text) {
+      return ContentService.createTextOutput("OK");
+    }
+
+    var messageId = messageObj.message_id;
+    var chatId = messageObj.chat.id;
+    var userText = messageObj.text;
+
+    // Cek apakah pesan ini sudah pernah diproses sebelumnya
+    var cache = CacheService.getScriptCache();
+    if (cache.get(messageId.toString())) {
+      return ContentService.createTextOutput("OK"); // Langsung abaikan pesan duplikat
+    }
+    
+    // Tandai message_id ini selama 5 menit
+    cache.put(messageId.toString(), "true", 300);
+
+    // --- JALANKAN FUNGSI PEMANGGILAN AI STUDIO & PENULISAN SALDO DI SINI ---
+    // Hitung saldo akhir HANYA lewat formula Spreadsheet/Database, bukan via AI.
+    var parsedTx = parseTransactionWithGemini(userText);
+    if (parsedTx && parsedTx.nominal > 0) {
+      saveTransactionToSheet(parsedTx, userText);
+      sendTelegramReply(chatId, "✅ Transaksi tercatat: " + parsedTx.keterangan + " (" + parsedTx.tipe + " Rp " + parsedTx.nominal + ")");
+    }
+
+  } catch (err) {
+    Logger.log("Error: " + err);
+  } finally {
+    lock.releaseLock();
+  }
+
+  return ContentService.createTextOutput("OK");
+}`,
+                          'gas_script'
+                        )
+                      }
+                      className="flex items-center gap-1 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer border border-slate-700"
+                    >
+                      {copied === 'gas_script' ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Tersalin!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Salin Script doPost</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    Bagi yang ingin menghubungkan Telegram Webhook langsung via Google Apps Script: skrip ini dilengkapi <strong className="text-emerald-400">LockService</strong> (mencegah tabrakan request) dan <strong className="text-emerald-400">CacheService (300 detik)</strong> agar pesan Telegram tidak tercatat dobel saat sinyal jaringan lambat. Saldo akhir dihitung murni menggunakan rumus kolom sheet, bukan asumsi AI.
+                  </p>
+                </div>
               </div>
             </div>
           )}
