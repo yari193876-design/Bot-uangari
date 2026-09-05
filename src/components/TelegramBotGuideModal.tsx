@@ -66,11 +66,14 @@ export default function TelegramBotGuideModal({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
       });
-      const data = await res.json();
-      if (res.ok && data.ok) {
+      let data: any = null;
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        data = await res.json();
+      }
+      if (res.ok && data?.ok) {
         setWebhookMessage(`✅ Webhook berhasil diaktifkan ke: ${url}`);
       } else {
-        setWebhookMessage(`❌ Gagal: ${data.error || 'Terjadi kesalahan'}`);
+        setWebhookMessage(`❌ Gagal: ${data?.error || 'Terjadi kesalahan'}`);
       }
     } catch (e: any) {
       setWebhookMessage(`❌ Gagal: ${e?.message || 'Koneksi error'}`);
@@ -84,11 +87,14 @@ export default function TelegramBotGuideModal({
     setWebhookMessage(null);
     try {
       const res = await fetch('/api/telegram/webhook/delete', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok && data.ok) {
+      let data: any = null;
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        data = await res.json();
+      }
+      if (res.ok && data?.ok) {
         setWebhookMessage('✅ Webhook dicopot. Bot beralih kembali ke Long Polling 24/7.');
       } else {
-        setWebhookMessage(`❌ Gagal: ${data.error || 'Terjadi kesalahan'}`);
+        setWebhookMessage(`❌ Gagal: ${data?.error || 'Terjadi kesalahan'}`);
       }
     } catch (e: any) {
       setWebhookMessage(`❌ Gagal: ${e?.message || 'Koneksi error'}`);

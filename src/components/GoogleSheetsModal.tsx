@@ -72,14 +72,64 @@ export default function GoogleSheetsModal({
   const [gasWebhookSaved, setGasWebhookSaved] = useState(false);
   const [copiedGas, setCopiedGas] = useState(false);
 
+  const [serviceAccountInfo, setServiceAccountInfo] = useState<{
+    configured: boolean;
+    email: string | null;
+    spreadsheetId: string;
+    spreadsheetUrl: string;
+  } | null>(null);
+
   useEffect(() => {
     fetch('/api/settings/gas-webhook')
-      .then((res) => res.json())
+      .then((res) => (res.ok && res.headers.get('content-type')?.includes('application/json') ? res.json() : null))
       .then((data) => {
-        if (data.gasWebhookUrl) setGasWebhookUrl(data.gasWebhookUrl);
+        if (data?.gasWebhookUrl) setGasWebhookUrl(data.gasWebhookUrl);
+      })
+      .catch(() => {});
+
+    fetch('/api/spreadsheet/info')
+      .then((res) => (res.ok && res.headers.get('content-type')?.includes('application/json') ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setServiceAccountInfo({
+            configured: Boolean(data.serviceAccountConfigured),
+            email: data.serviceAccountEmail || null,
+            spreadsheetId: data.spreadsheetId || PRIMARY_SPREADSHEET_ID,
+            spreadsheetUrl: data.spreadsheetUrl || PRIMARY_SPREADSHEET_URL,
+          });
+        }
       })
       .catch(() => {});
   }, []);
+
+  const handleServiceAccountSyncNow = async () => {
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const res = await fetch('/api/sheets/sync-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spreadsheetId: serviceAccountInfo?.spreadsheetId || spreadsheetId }),
+      });
+      let data: any = null;
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        data = await res.json();
+      }
+      if (!res.ok || !data?.success) {
+        throw new Error(data?.error || 'Gagal menyinkronkan data.');
+      }
+      setLastSyncTime(new Date());
+      setStatusMessage({
+        type: 'success',
+        text: `Sukses! ${data.updatedRows ? data.updatedRows - 1 : transactions.length} transaksi telah disinkronkan ke Google Sheet secara otomatis via Service Account.`,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Gagal sinkronisasi.';
+      setStatusMessage({ type: 'error', text: msg });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const handleSaveGasWebhook = async (e: FormEvent) => {
     e.preventDefault();
@@ -121,8 +171,11 @@ export default function GoogleSheetsModal({
       if (!res.ok) {
         throw new Error('Gagal menggabungkan transaksi ke database sistem.');
       }
-      const data = await res.json();
-      if (onPullSuccess && data.transactions) {
+      let data: any = null;
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        data = await res.json();
+      }
+      if (onPullSuccess && data?.transactions) {
         onPullSuccess(data.transactions);
       }
       setLastSyncTime(new Date());
@@ -286,6 +339,65 @@ export default function GoogleSheetsModal({
               >
                 ✕
               </button>
+            </div>
+          )}
+
+          {/* Section 0: Google Service Account 24/7 Active Banner */}
+          {serviceAccountInfo?.configured && (
+            <div className="bg-emerald-50/80 border border-emerald-200/90 rounded-2xl p-4.5 space-y-3 shadow-2xs">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <div className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                  </div>
+                  <h3 className="text-xs font-bold text-emerald-900 uppercase tracking-wide">
+                    Service Account 24/7 Aktif & Terhubung
+                  </h3>
+                </div>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                  Backend 24/7
+                </span>
+              </div>
+
+              <p className="text-xs text-emerald-900 leading-relaxed">
+                Setiap pesan transaksi baru yang masuk dari Telegram akan <strong>langsung disimpan secara otomatis</strong> ke Google Spreadsheet oleh server backend tanpa perlu login browser!
+              </p>
+
+              <div className="p-2.5 bg-white/90 rounded-xl border border-emerald-200 text-[11px] text-slate-700 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 font-medium">Email Service Account:</span>
+                  <span className="font-mono text-emerald-700 text-[11px] truncate select-all">
+                    {serviceAccountInfo.email || 'bot-pembukuan@...'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-slate-500 font-medium">Status Data:</span>
+                  <span className="text-slate-800 font-semibold">Tipe Angka Murni (Bebas #ERROR!)</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  id="sa-sync-now-btn"
+                  onClick={handleServiceAccountSyncNow}
+                  disabled={isProcessing}
+                  className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
+                  <span>Sinkronkan ke Sheet Sekarang</span>
+                </button>
+                <a
+                  href={serviceAccountInfo.spreadsheetUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                >
+                  <span>Buka Sheet</span>
+                  <ExternalLink className="w-3 h-3 text-slate-400" />
+                </a>
+              </div>
             </div>
           )}
 

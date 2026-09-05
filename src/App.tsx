@@ -100,7 +100,8 @@ export default function App() {
     try {
       if (showLoadingSpinner) setIsLoading(true);
       const res = await fetch('/api/transactions');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         const txs: Transaction[] = data.transactions || [];
         setTransactions(txs);
@@ -112,7 +113,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error('Failed to load transactions:', err);
+      console.warn('Unable to reach /api/transactions temporarily:', err);
     } finally {
       if (showLoadingSpinner) setIsLoading(false);
     }
@@ -122,12 +123,13 @@ export default function App() {
   const loadBotStatus = useCallback(async () => {
     try {
       const res = await fetch('/api/telegram/status');
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data: TelegramBotStatus = await res.json();
         setBotStatus(data);
       }
     } catch (err) {
-      console.error('Failed to check Telegram bot status:', err);
+      console.warn('Unable to reach /api/telegram/status temporarily:', err);
     }
   }, []);
 
@@ -166,11 +168,13 @@ export default function App() {
           try {
             setIsSyncingGoogleSheets(true);
             const res = await fetch('/api/transactions');
-            const data = await res.json();
-            const txList = data.transactions || transactions;
-            if (txList.length > 0) {
-              await syncAllTransactionsToSheet(result.accessToken, spreadsheetId, txList);
-              setLastSyncTime(new Date());
+            if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+              const data = await res.json();
+              const txList = data.transactions || transactions;
+              if (txList.length > 0) {
+                await syncAllTransactionsToSheet(result.accessToken, spreadsheetId, txList);
+                setLastSyncTime(new Date());
+              }
             }
           } catch (syncErr) {
             console.warn('Initial sync after Google login:', syncErr);
@@ -211,7 +215,7 @@ export default function App() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sheetTransactions: sheetTxs }),
         });
-        if (res.ok) {
+        if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
           const data = await res.json();
           setTransactions(data.transactions || []);
           setSummary(data.summary || null);
@@ -227,21 +231,44 @@ export default function App() {
     }
   };
 
-  // Sync transactions to Google Sheets
+  // Sync transactions to Google Sheets (Backend 24/7 Service Account with client OAuth fallback)
   const handleSyncGoogleSheets = async () => {
-    if (!authToken || !spreadsheetId) {
-      setIsGoogleModalOpen(true);
-      return;
-    }
+    setIsSyncingGoogleSheets(true);
     try {
-      setIsSyncingGoogleSheets(true);
-      await syncAllTransactionsToSheet(authToken, spreadsheetId, transactions);
-      const sig = `${transactions.length}:${transactions[0]?.id || ''}:${transactions[transactions.length - 1]?.id || ''}`;
-      lastSyncedSignatureRef.current = sig;
-      setLastSyncTime(new Date());
+      // 1. Try backend Service Account sync first (works 24/7 without browser OAuth)
+      const res = await fetch('/api/sheets/sync-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ spreadsheetId }),
+      });
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
+        const sig = `${transactions.length}:${transactions[0]?.id || ''}:${transactions[transactions.length - 1]?.id || ''}`;
+        lastSyncedSignatureRef.current = sig;
+        setLastSyncTime(new Date());
+        return;
+      }
+
+      // 2. Fallback to client-side OAuth if backend service account had issue
+      if (authToken && spreadsheetId) {
+        await syncAllTransactionsToSheet(authToken, spreadsheetId, transactions);
+        const sig = `${transactions.length}:${transactions[0]?.id || ''}:${transactions[transactions.length - 1]?.id || ''}`;
+        lastSyncedSignatureRef.current = sig;
+        setLastSyncTime(new Date());
+      } else {
+        setIsGoogleModalOpen(true);
+      }
     } catch (err) {
       console.error('Failed to sync to Google Sheets:', err);
-      setIsGoogleModalOpen(true);
+      if (authToken && spreadsheetId) {
+        try {
+          await syncAllTransactionsToSheet(authToken, spreadsheetId, transactions);
+          setLastSyncTime(new Date());
+        } catch (_) {
+          setIsGoogleModalOpen(true);
+        }
+      } else {
+        setIsGoogleModalOpen(true);
+      }
     } finally {
       setIsSyncingGoogleSheets(false);
     }
@@ -268,8 +295,12 @@ export default function App() {
     });
 
     if (!res.ok) {
-      const data = await res.json();
-      throw new Error(data.error || 'Gagal menyimpan transaksi');
+      let errMsg = 'Gagal menyimpan transaksi';
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json();
+        errMsg = data?.error || errMsg;
+      }
+      throw new Error(errMsg);
     }
 
     await loadData();
@@ -306,8 +337,12 @@ export default function App() {
     });
 
     if (!res.ok) {
-      const data = await res.json();
-      throw new Error(data.error || 'Gagal memperbarui transaksi');
+      let errMsg = 'Gagal memperbarui transaksi';
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        const data = await res.json();
+        errMsg = data?.error || errMsg;
+      }
+      throw new Error(errMsg);
     }
 
     await loadData();

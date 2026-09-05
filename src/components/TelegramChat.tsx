@@ -94,6 +94,11 @@ Silakan coba ketik transaksimu atau coba tombol cepat di bawah ya! 😊`,
           throw new Error('Gagal memproses pesan');
         }
 
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+          throw new Error('Respon server tidak valid');
+        }
+
         const data = await response.json();
 
         const botMsg: ChatMessage = {

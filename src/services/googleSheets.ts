@@ -329,26 +329,30 @@ export async function syncAllTransactionsToSheet(
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
+  let runningBalance = 0;
+  const dataRows: (string | number)[][] = sorted.map((t) => {
+    const numAmount = Number(t.amount) || 0;
+    if (t.type === 'pemasukan') {
+      runningBalance += numAmount;
+    } else {
+      runningBalance -= numAmount;
+    }
+
+    return [
+      formatToWibString(t.timestamp),
+      t.type,
+      t.category,
+      numAmount,
+      t.description,
+      t.rawMessage || '',
+      runningBalance,
+      t.id,
+    ];
+  });
+
   const rows: (string | number)[][] = [
     DEFAULT_HEADERS,
-    ...sorted.map((t, idx) => {
-      const rowNum = idx + 2;
-      const formulaSaldo =
-        rowNum === 2
-          ? `=IF(LOWER(B2)="pemasukan", D2, -D2)`
-          : `=IF(LOWER(B${rowNum})="pemasukan", G${rowNum - 1}+D${rowNum}, G${rowNum - 1}-D${rowNum})`;
-
-      return [
-        formatToWibString(t.timestamp),
-        t.type,
-        t.category,
-        t.amount,
-        t.description,
-        t.rawMessage || '',
-        formulaSaldo,
-        t.id,
-      ];
-    }),
+    ...dataRows,
   ];
 
   // Clear existing values to prevent leftover rows

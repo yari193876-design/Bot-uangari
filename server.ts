@@ -4,6 +4,12 @@ import fs from "fs";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import dotenv from "dotenv";
+import {
+  isServiceAccountConfigured,
+  getServiceAccountEmail,
+  syncAllTransactionsToSheets,
+  triggerBackgroundGoogleSheetsSync,
+} from "./server/googleSheetsService";
 
 dotenv.config();
 
@@ -26,6 +32,31 @@ const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 // Dedicated Google Spreadsheet ID & URL
 export const TARGET_SPREADSHEET_ID = "1w7BDRLWI9qHFL0FJxrvBPEbDkifDOCJdvVlr_c5PM_A";
 export const TARGET_SPREADSHEET_URL = `https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}/edit`;
+
+export function getActiveSpreadsheetId(): string {
+  if (process.env.GOOGLE_SHEETS_SPREADSHEET_ID) return process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+      if (parsed.spreadsheetId) return parsed.spreadsheetId;
+    }
+  } catch (_) {}
+  return TARGET_SPREADSHEET_ID;
+}
+
+export function setActiveSpreadsheetId(id: string) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    let settings: any = {};
+    if (fs.existsSync(SETTINGS_FILE)) {
+      settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8")) || {};
+    }
+    settings.spreadsheetId = id;
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+  } catch (_) {}
+}
 
 export function getGasWebhookUrl(): string | null {
   if (process.env.GAS_WEBHOOK_URL) return process.env.GAS_WEBHOOK_URL;
@@ -147,10 +178,14 @@ function saveTransactions() {
     }
     // Atomic rename
     fs.renameSync(tempFile, DATA_FILE);
+
+    // Auto-sync 24/7 to Google Sheets via Service Account (debounced non-blocking)
+    triggerBackgroundGoogleSheetsSync(transactions, getActiveSpreadsheetId());
   } catch (err) {
     console.error("Gagal menyimpan transaksi (atomic):", err);
     try {
       fs.writeFileSync(DATA_FILE, JSON.stringify(transactions, null, 2), "utf-8");
+      triggerBackgroundGoogleSheetsSync(transactions, getActiveSpreadsheetId());
     } catch (writeErr) {
       console.error("Gagal menyimpan fallback transaksi:", writeErr);
     }
@@ -1362,11 +1397,46 @@ async function startServer() {
 
   // Google Spreadsheet Info endpoint
   app.get("/api/spreadsheet/info", (_req, res) => {
+    const sheetId = getActiveSpreadsheetId();
     res.json({
-      spreadsheetId: TARGET_SPREADSHEET_ID,
-      spreadsheetUrl: TARGET_SPREADSHEET_URL,
+      spreadsheetId: sheetId,
+      spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${sheetId}/edit`,
       totalTransactions: transactions.length,
       gasWebhookConfigured: Boolean(getGasWebhookUrl()),
+      serviceAccountConfigured: isServiceAccountConfigured(),
+      serviceAccountEmail: getServiceAccountEmail(),
+    });
+  });
+
+  // Direct trigger to synchronize Google Sheets via 24/7 Service Account
+  app.post("/api/sheets/sync-now", async (req, res) => {
+    try {
+      const targetId = req.body?.spreadsheetId || getActiveSpreadsheetId();
+      const result = await syncAllTransactionsToSheets(transactions, targetId);
+      res.json({
+        success: true,
+        ...result,
+        lastSyncTime: new Date().toISOString(),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[Manual Sync Error]:", msg);
+      res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  // Settings endpoint for active Spreadsheet ID
+  app.post("/api/settings/spreadsheet-id", (req, res) => {
+    const { spreadsheetId } = req.body;
+    if (spreadsheetId && typeof spreadsheetId === "string") {
+      setActiveSpreadsheetId(spreadsheetId.trim());
+      triggerBackgroundGoogleSheetsSync(transactions, spreadsheetId.trim());
+    }
+    const currentId = getActiveSpreadsheetId();
+    res.json({
+      success: true,
+      spreadsheetId: currentId,
+      spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${currentId}/edit`,
     });
   });
 
@@ -1734,6 +1804,17 @@ async function startServer() {
       console.error("Telegram webhook error:", webhookErr);
       res.status(200).json({ ok: false });
     }
+  });
+
+  // Explicit 404 handler for unmatched /api routes so they NEVER fall through to Vite SPA / HTML index fallback
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route tidak ditemukan: ${req.method} ${req.path}` });
+  });
+
+  // Error handling middleware for /api routes
+  app.use("/api", (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("[API Unhandled Error]:", err);
+    res.status(500).json({ error: "Internal Server Error", message: err?.message || String(err) });
   });
 
   // Vite middleware for development
