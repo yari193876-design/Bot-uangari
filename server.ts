@@ -121,7 +121,7 @@ export async function forwardTransactionToGas(t: StoredTransaction) {
       body: JSON.stringify({
         action: "append_transaction",
         transaction: t,
-        spreadsheetId: TARGET_SPREADSHEET_ID,
+        spreadsheetId: getActiveSpreadsheetId(),
       }),
     });
   } catch (e) {
@@ -213,8 +213,9 @@ function saveTransactions() {
     console.error("Gagal menyimpan transaksi (atomic):", err);
     try {
       fs.writeFileSync(DATA_FILE, JSON.stringify(transactions, null, 2), "utf-8");
-      triggerBackgroundGoogleSheetsSync(transactions, getActiveSpreadsheetId());
-    } catch (writeErr) {
+      triggerBackgroundGoogleSheetsSync(transactions, getActiveSpreadsheetId().catch((err) => {
+  console.error("[Sheets Sync Error]:", err););
+    {
       console.error("Gagal menyimpan fallback transaksi:", writeErr);
     }
   }
