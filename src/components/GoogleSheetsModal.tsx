@@ -1,4 +1,4 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
 import {
   FileSpreadsheet,
   CheckCircle2,
@@ -11,12 +11,16 @@ import {
   LogOut,
   ShieldCheck,
   Check,
+  Download,
+  Copy,
+  Terminal,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
   createNewSpreadsheet,
   verifySpreadsheet,
   syncAllTransactionsToSheet,
+  readTransactionsFromSheet,
   saveSpreadsheetInfo,
   clearSpreadsheetInfo,
   PRIMARY_SPREADSHEET_ID,
@@ -38,6 +42,7 @@ interface GoogleSheetsModalProps {
   transactions: Transaction[];
   lastSyncTime: Date | null;
   setLastSyncTime: (date: Date) => void;
+  onPullSuccess?: (newTransactions: Transaction[]) => void;
 }
 
 export default function GoogleSheetsModal({
@@ -54,12 +59,84 @@ export default function GoogleSheetsModal({
   transactions,
   lastSyncTime,
   setLastSyncTime,
+  onPullSuccess,
 }: GoogleSheetsModalProps) {
   const [activeSubTab, setActiveSubTab] = useState<'status' | 'link_custom'>('status');
   const [customInput, setCustomInput] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [showConfirmSync, setShowConfirmSync] = useState(false);
+
+  const [gasWebhookUrl, setGasWebhookUrl] = useState('');
+  const [isSavingGasWebhook, setIsSavingGasWebhook] = useState(false);
+  const [gasWebhookSaved, setGasWebhookSaved] = useState(false);
+  const [copiedGas, setCopiedGas] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/settings/gas-webhook')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.gasWebhookUrl) setGasWebhookUrl(data.gasWebhookUrl);
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleSaveGasWebhook = async (e: FormEvent) => {
+    e.preventDefault();
+    setIsSavingGasWebhook(true);
+    try {
+      const res = await fetch('/api/settings/gas-webhook', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gasWebhookUrl }),
+      });
+      if (res.ok) {
+        setGasWebhookSaved(true);
+        setTimeout(() => setGasWebhookSaved(false), 3000);
+      }
+    } catch (_) {
+    } finally {
+      setIsSavingGasWebhook(false);
+    }
+  };
+
+  const handlePullFromSheet = async () => {
+    if (!token || !spreadsheetId) return;
+    setIsProcessing(true);
+    setStatusMessage(null);
+    try {
+      const sheetTxs = await readTransactionsFromSheet(token, spreadsheetId);
+      if (sheetTxs.length === 0) {
+        setStatusMessage({
+          type: 'error',
+          text: 'Tidak ada data transaksi valid ditemukan di Google Sheet.',
+        });
+        return;
+      }
+      const res = await fetch('/api/transactions/sync-from-sheet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheetTransactions: sheetTxs }),
+      });
+      if (!res.ok) {
+        throw new Error('Gagal menggabungkan transaksi ke database sistem.');
+      }
+      const data = await res.json();
+      if (onPullSuccess && data.transactions) {
+        onPullSuccess(data.transactions);
+      }
+      setLastSyncTime(new Date());
+      setStatusMessage({
+        type: 'success',
+        text: `Berhasil menarik ${sheetTxs.length} transaksi dari Google Sheet! (${data.added || 0} baru, ${data.updated || 0} sinkron)`,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Gagal menarik data dari Google Sheet.';
+      setStatusMessage({ type: 'error', text: msg });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -368,10 +445,22 @@ export default function GoogleSheetsModal({
                       type="button"
                       onClick={() => setShowConfirmSync(true)}
                       disabled={isProcessing}
-                      className="flex-1 min-w-[150px] px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                      title="Kirim semua data transaksi dari aplikasi ke Google Sheet"
+                      className="flex-1 min-w-[140px] px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
                     >
                       <RefreshCw className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
-                      <span>{isProcessing ? 'Menyinkronkan...' : 'Sinkronkan Sekarang'}</span>
+                      <span>{isProcessing ? 'Menyinkronkan...' : 'Kirim ke Sheet'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handlePullFromSheet}
+                      disabled={isProcessing}
+                      title="Tarik data transaksi dari Google Sheet ke aplikasi ini"
+                      className="flex-1 min-w-[140px] px-3 py-2 rounded-xl bg-sky-600 hover:bg-sky-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      <Download className={`w-3.5 h-3.5 ${isProcessing ? 'animate-spin' : ''}`} />
+                      <span>{isProcessing ? 'Menarik...' : 'Tarik dari Sheet'}</span>
                     </button>
 
                     <button
@@ -511,6 +600,49 @@ export default function GoogleSheetsModal({
               )}
             </div>
           )}
+
+          {/* Section: Webhook Google Apps Script 24/7 (Opsional untuk background sinkron) */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-indigo-600" />
+                <span className="font-bold text-slate-800">
+                  Sinkronisasi 24 Jam via Webhook Google Apps Script (Opsional)
+                </span>
+              </div>
+              {gasWebhookSaved && (
+                <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">
+                  Tersimpan!
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-600 leading-relaxed">
+              Jika Anda ingin setiap chat Telegram otomatis langsung masuk ke Spreadsheet tanpa harus membuka browser atau web ini, pasang URL Web App Google Apps Script Anda di sini. Server kami akan meneruskan setiap transaksi baru secara otomatis:
+            </p>
+            <form onSubmit={handleSaveGasWebhook} className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  placeholder="https://script.google.com/macros/s/.../exec"
+                  value={gasWebhookUrl}
+                  onChange={(e) => setGasWebhookUrl(e.target.value)}
+                  className="flex-1 text-xs bg-white border border-slate-200 rounded-xl px-3 py-2 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="submit"
+                  disabled={isSavingGasWebhook}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isSavingGasWebhook ? 'Menyimpan...' : 'Simpan URL'}
+                </button>
+              </div>
+              {gasWebhookUrl && (
+                <p className="text-[10px] text-emerald-600 font-medium">
+                  ✓ Webhook aktif: Server akan otomatis forward transaksi Telegram ke script ini.
+                </p>
+              )}
+            </form>
+          </div>
 
           {/* Guide & Info footer */}
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-500 space-y-2">

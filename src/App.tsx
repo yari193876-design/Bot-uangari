@@ -30,6 +30,7 @@ import {
   getSavedSpreadsheetId,
   getSavedSpreadsheetName,
   syncAllTransactionsToSheet,
+  readTransactionsFromSheet,
   saveSpreadsheetInfo,
 } from './services/googleSheets';
 
@@ -53,7 +54,8 @@ export default function App() {
   const [spreadsheetName, setSpreadsheetName] = useState<string>(getSavedSpreadsheetName());
   const [isSyncingGoogleSheets, setIsSyncingGoogleSheets] = useState(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
-  const lastSyncedTxCountRef = useRef<number>(-1);
+  const lastSyncedSignatureRef = useRef<string>('');
+  const isSyncInProgressRef = useRef<boolean>(false);
 
   // Initialize Firebase Auth listener
   useEffect(() => {
@@ -70,6 +72,29 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Safe background sync to Google Sheets
+  const performGoogleSheetSync = useCallback(
+    async (txsToSync: Transaction[], token: string, sheetId: string) => {
+      if (isSyncInProgressRef.current || !token || !sheetId || txsToSync.length === 0) return;
+      const signature = `${txsToSync.length}:${txsToSync[0]?.id || ''}:${txsToSync[txsToSync.length - 1]?.id || ''}`;
+      if (lastSyncedSignatureRef.current === signature) return;
+
+      try {
+        isSyncInProgressRef.current = true;
+        setIsSyncingGoogleSheets(true);
+        await syncAllTransactionsToSheet(token, sheetId, txsToSync);
+        lastSyncedSignatureRef.current = signature;
+        setLastSyncTime(new Date());
+      } catch (e) {
+        console.warn('Background Google Sheet sync error:', e);
+      } finally {
+        isSyncInProgressRef.current = false;
+        setIsSyncingGoogleSheets(false);
+      }
+    },
+    []
+  );
+
   // Fetch transactions and financial summary
   const loadData = useCallback(async (showLoadingSpinner = false) => {
     try {
@@ -82,13 +107,8 @@ export default function App() {
         setSummary(data.summary || null);
 
         // Auto-sync if new transactions arrived while user is authenticated with Google
-        if (authToken && spreadsheetId && txs.length > 0 && lastSyncedTxCountRef.current !== -1 && txs.length !== lastSyncedTxCountRef.current) {
-          lastSyncedTxCountRef.current = txs.length;
-          syncAllTransactionsToSheet(authToken, spreadsheetId, txs)
-            .then(() => setLastSyncTime(new Date()))
-            .catch((e) => console.warn('Background sync error:', e));
-        } else if (lastSyncedTxCountRef.current === -1 && txs.length > 0) {
-          lastSyncedTxCountRef.current = txs.length;
+        if (authToken && spreadsheetId && txs.length > 0) {
+          performGoogleSheetSync(txs, authToken, spreadsheetId);
         }
       }
     } catch (err) {
@@ -96,7 +116,7 @@ export default function App() {
     } finally {
       if (showLoadingSpinner) setIsLoading(false);
     }
-  }, [authToken, spreadsheetId]);
+  }, [authToken, spreadsheetId, performGoogleSheetSync]);
 
   // Fetch Telegram bot status
   const loadBotStatus = useCallback(async () => {
@@ -176,6 +196,37 @@ export default function App() {
     }
   };
 
+  // Pull transactions from Google Sheets to local database
+  const handlePullGoogleSheets = async () => {
+    if (!authToken || !spreadsheetId) {
+      setIsGoogleModalOpen(true);
+      return;
+    }
+    try {
+      setIsSyncingGoogleSheets(true);
+      const sheetTxs = await readTransactionsFromSheet(authToken, spreadsheetId);
+      if (sheetTxs.length > 0) {
+        const res = await fetch('/api/transactions/sync-from-sheet', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sheetTransactions: sheetTxs }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setTransactions(data.transactions || []);
+          setSummary(data.summary || null);
+          setLastSyncTime(new Date());
+          const newSig = `${data.transactions.length}:${data.transactions[0]?.id || ''}:${data.transactions[data.transactions.length - 1]?.id || ''}`;
+          lastSyncedSignatureRef.current = newSig;
+        }
+      }
+    } catch (err) {
+      console.error('Failed to pull from Google Sheets:', err);
+    } finally {
+      setIsSyncingGoogleSheets(false);
+    }
+  };
+
   // Sync transactions to Google Sheets
   const handleSyncGoogleSheets = async () => {
     if (!authToken || !spreadsheetId) {
@@ -185,6 +236,8 @@ export default function App() {
     try {
       setIsSyncingGoogleSheets(true);
       await syncAllTransactionsToSheet(authToken, spreadsheetId, transactions);
+      const sig = `${transactions.length}:${transactions[0]?.id || ''}:${transactions[transactions.length - 1]?.id || ''}`;
+      lastSyncedSignatureRef.current = sig;
       setLastSyncTime(new Date());
     } catch (err) {
       console.error('Failed to sync to Google Sheets:', err);
@@ -196,17 +249,8 @@ export default function App() {
 
   // Auto-sync helper after any transaction mutation
   const autoSyncToSheetIfConnected = async () => {
-    if (authToken && spreadsheetId) {
-      try {
-        const res = await fetch('/api/transactions');
-        if (res.ok) {
-          const data = await res.json();
-          await syncAllTransactionsToSheet(authToken, spreadsheetId, data.transactions || []);
-          setLastSyncTime(new Date());
-        }
-      } catch (err) {
-        console.warn('Auto-sync to Google Sheet failed:', err);
-      }
+    if (authToken && spreadsheetId && transactions.length > 0) {
+      performGoogleSheetSync(transactions, authToken, spreadsheetId);
     }
   };
 
@@ -654,6 +698,7 @@ export default function App() {
               spreadsheetId={spreadsheetId}
               spreadsheetName={spreadsheetName}
               onSyncGoogleSheets={handleSyncGoogleSheets}
+              onPullGoogleSheets={handlePullGoogleSheets}
               isSyncingGoogleSheets={isSyncingGoogleSheets}
               hasGoogleAuth={!!authToken}
               lastSyncTime={lastSyncTime}
@@ -694,6 +739,10 @@ export default function App() {
         transactions={transactions}
         lastSyncTime={lastSyncTime}
         setLastSyncTime={setLastSyncTime}
+        onPullSuccess={(newTxs) => {
+          setTransactions(newTxs);
+          loadData();
+        }}
       />
     </div>
   );

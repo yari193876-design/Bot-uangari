@@ -44,6 +44,7 @@ interface TransactionDatabaseProps {
   spreadsheetId?: string | null;
   spreadsheetName?: string;
   onSyncGoogleSheets?: () => void;
+  onPullGoogleSheets?: () => void;
   isSyncingGoogleSheets?: boolean;
   hasGoogleAuth?: boolean;
   lastSyncTime?: Date | null;
@@ -62,6 +63,7 @@ export default function TransactionDatabase({
   spreadsheetId,
   spreadsheetName,
   onSyncGoogleSheets,
+  onPullGoogleSheets,
   isSyncingGoogleSheets = false,
   hasGoogleAuth = false,
   lastSyncTime = null,
@@ -198,11 +200,26 @@ export default function TransactionDatabase({
                   id="sync-gsheet-now-btn"
                   onClick={onSyncGoogleSheets}
                   disabled={isSyncingGoogleSheets}
-                  title="Sinkronkan transaksi sekarang ke Google Sheet"
+                  title="Kirim semua data transaksi dari database ke Google Sheet"
                   className="px-3 py-2 rounded-2xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isSyncingGoogleSheets ? 'animate-spin' : ''}`} />
-                  <span className="hidden md:inline">Sinkronkan</span>
+                  <span className="hidden lg:inline">Kirim ke Sheet</span>
+                  <span className="lg:hidden">Sync</span>
+                </button>
+              )}
+
+              {onPullGoogleSheets && (
+                <button
+                  type="button"
+                  id="pull-gsheet-now-btn"
+                  onClick={onPullGoogleSheets}
+                  disabled={isSyncingGoogleSheets}
+                  title="Tarik data transaksi terbaru dari Google Sheet ke database lokal"
+                  className="px-3 py-2 rounded-2xl bg-sky-50 hover:bg-sky-100 text-sky-700 border border-sky-200 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <Download className={`w-3.5 h-3.5 ${isSyncingGoogleSheets ? 'animate-spin' : ''}`} />
+                  <span className="hidden lg:inline">Tarik dari Sheet</span>
                 </button>
               )}
             </div>

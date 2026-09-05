@@ -21,10 +21,54 @@ interface StoredTransaction {
 const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "transactions.json");
 const BACKUP_FILE = path.join(DATA_DIR, "transactions.bak.json");
+const SETTINGS_FILE = path.join(DATA_DIR, "settings.json");
 
 // Dedicated Google Spreadsheet ID & URL
 export const TARGET_SPREADSHEET_ID = "1w7BDRLWI9qHFL0FJxrvBPEbDkifDOCJdvVlr_c5PM_A";
 export const TARGET_SPREADSHEET_URL = `https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}/edit`;
+
+export function getGasWebhookUrl(): string | null {
+  if (process.env.GAS_WEBHOOK_URL) return process.env.GAS_WEBHOOK_URL;
+  try {
+    if (fs.existsSync(SETTINGS_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8"));
+      return parsed.gasWebhookUrl || null;
+    }
+  } catch (_) {}
+  return null;
+}
+
+export function setGasWebhookUrl(url: string | null) {
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+    let settings: any = {};
+    if (fs.existsSync(SETTINGS_FILE)) {
+      settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf-8")) || {};
+    }
+    settings.gasWebhookUrl = url;
+    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2), "utf-8");
+  } catch (_) {}
+}
+
+export async function forwardTransactionToGas(t: StoredTransaction) {
+  const url = getGasWebhookUrl();
+  if (!url) return;
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "append_transaction",
+        transaction: t,
+        spreadsheetId: TARGET_SPREADSHEET_ID,
+      }),
+    });
+  } catch (e) {
+    console.warn("[GAS Webhook] Gagal meneruskan transaksi ke Apps Script:", e);
+  }
+}
 
 function loadTransactions(): StoredTransaction[] {
   try {
@@ -993,6 +1037,7 @@ _Semua data transaksi tersimpan dan disinkronkan secara eksklusif ke spreadsheet
 
       transactions.unshift(newTransaction);
       saveTransactions();
+      forwardTransactionToGas(newTransaction);
 
       const summary = getFinancialSummary();
       return {
@@ -1051,6 +1096,7 @@ _Semua data transaksi tersimpan dan disinkronkan secara eksklusif ke spreadsheet
 
       transactions.unshift(newTransaction);
       saveTransactions();
+      forwardTransactionToGas(newTransaction);
 
       const summary = getFinancialSummary();
       return {
@@ -1075,6 +1121,7 @@ _Semua data transaksi tersimpan dan disinkronkan secara eksklusif ke spreadsheet
 
     transactions.unshift(newTransaction);
     saveTransactions();
+    forwardTransactionToGas(newTransaction);
 
     const summary = getFinancialSummary();
     return {
@@ -1185,6 +1232,7 @@ async function startServer() {
 
     transactions.unshift(newTx);
     saveTransactions();
+    forwardTransactionToGas(newTx);
 
     res.status(201).json({
       transaction: newTx,
@@ -1318,6 +1366,62 @@ async function startServer() {
       spreadsheetId: TARGET_SPREADSHEET_ID,
       spreadsheetUrl: TARGET_SPREADSHEET_URL,
       totalTransactions: transactions.length,
+      gasWebhookConfigured: Boolean(getGasWebhookUrl()),
+    });
+  });
+
+  // Google Apps Script Webhook Settings
+  app.get("/api/settings/gas-webhook", (_req, res) => {
+    res.json({ gasWebhookUrl: getGasWebhookUrl() || "" });
+  });
+
+  app.post("/api/settings/gas-webhook", (req, res) => {
+    const { gasWebhookUrl } = req.body;
+    setGasWebhookUrl(gasWebhookUrl && typeof gasWebhookUrl === "string" ? gasWebhookUrl.trim() : null);
+    res.json({ success: true, gasWebhookUrl: getGasWebhookUrl() || "" });
+  });
+
+  // Sync / Merge transactions from Google Sheets into backend database
+  app.post("/api/transactions/sync-from-sheet", (req, res) => {
+    const { sheetTransactions } = req.body;
+    if (!Array.isArray(sheetTransactions)) {
+      return res.status(400).json({ error: "sheetTransactions harus berupa array" });
+    }
+
+    // Merge transactions: match by ID or deduplicate by timestamp + amount + type
+    let addedCount = 0;
+    let updatedCount = 0;
+    const existingMap = new Map(transactions.map((t) => [t.id, t]));
+
+    for (const st of sheetTransactions) {
+      if (!st || !st.amount) continue;
+      if (st.id && existingMap.has(st.id)) {
+        const idx = transactions.findIndex((t) => t.id === st.id);
+        if (idx !== -1) {
+          transactions[idx] = { ...transactions[idx], ...st };
+          updatedCount++;
+        }
+      } else {
+        // Check fuzzy duplicate (same timestamp, amount, type)
+        const dup = transactions.find(
+          (t) => t.type === st.type && t.amount === st.amount && Math.abs(new Date(t.timestamp).getTime() - new Date(st.timestamp).getTime()) < 60000
+        );
+        if (!dup) {
+          transactions.unshift(st);
+          existingMap.set(st.id, st);
+          addedCount++;
+        }
+      }
+    }
+
+    saveTransactions();
+    res.json({
+      success: true,
+      added: addedCount,
+      updated: updatedCount,
+      total: transactions.length,
+      transactions,
+      summary: getFinancialSummary(),
     });
   });
 

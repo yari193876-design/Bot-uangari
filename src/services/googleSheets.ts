@@ -8,7 +8,7 @@ import {
   signOut,
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { Transaction } from '../types';
+import { Transaction, TransactionType } from '../types';
 import { formatRupiah } from '../utils/formatters';
 
 // Initialize Firebase App instance
@@ -20,9 +20,12 @@ const provider = new GoogleAuthProvider();
 provider.addScope('https://www.googleapis.com/auth/spreadsheets');
 provider.addScope('https://www.googleapis.com/auth/drive.file');
 
-// In-memory access token cache (MANDATORY: never store in localStorage)
+// Session-aware access token cache (valid for current browser session up to 50 min)
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
+
+const SESSION_TOKEN_KEY = 'gsheet_oauth_session_token';
+const SESSION_TIME_KEY = 'gsheet_oauth_session_time';
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -30,24 +33,35 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        // When user is re-hydrated on page reload, token may need to be refreshed
+      let token = cachedAccessToken;
+      if (!token) {
         try {
-          // Token is obtained during signInWithPopup
-          if (cachedAccessToken && onAuthSuccess) {
-            onAuthSuccess(user, cachedAccessToken);
-          } else if (onAuthFailure) {
-            onAuthFailure();
+          const storedToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
+          const storedTime = sessionStorage.getItem(SESSION_TIME_KEY);
+          if (storedToken && storedTime) {
+            const ageMs = Date.now() - parseInt(storedTime, 10);
+            if (ageMs < 50 * 60 * 1000) {
+              token = storedToken;
+              cachedAccessToken = storedToken;
+            } else {
+              sessionStorage.removeItem(SESSION_TOKEN_KEY);
+              sessionStorage.removeItem(SESSION_TIME_KEY);
+            }
           }
-        } catch {
-          cachedAccessToken = null;
-          if (onAuthFailure) onAuthFailure();
-        }
+        } catch (_) {}
+      }
+
+      if (token) {
+        if (onAuthSuccess) onAuthSuccess(user, token);
+      } else {
+        if (onAuthFailure) onAuthFailure();
       }
     } else {
       cachedAccessToken = null;
+      try {
+        sessionStorage.removeItem(SESSION_TOKEN_KEY);
+        sessionStorage.removeItem(SESSION_TIME_KEY);
+      } catch (_) {}
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -63,6 +77,11 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    try {
+      sessionStorage.setItem(SESSION_TOKEN_KEY, credential.accessToken);
+      sessionStorage.setItem(SESSION_TIME_KEY, Date.now().toString());
+    } catch (_) {}
+
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: unknown) {
     console.error('Sign in error:', error);
@@ -73,16 +92,43 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
+  if (!cachedAccessToken) {
+    try {
+      const storedToken = sessionStorage.getItem(SESSION_TOKEN_KEY);
+      const storedTime = sessionStorage.getItem(SESSION_TIME_KEY);
+      if (storedToken && storedTime) {
+        const ageMs = Date.now() - parseInt(storedTime, 10);
+        if (ageMs < 50 * 60 * 1000) {
+          cachedAccessToken = storedToken;
+        }
+      }
+    } catch (_) {}
+  }
   return cachedAccessToken;
 };
 
 export const setAccessToken = (token: string | null) => {
   cachedAccessToken = token;
+  if (token) {
+    try {
+      sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+      sessionStorage.setItem(SESSION_TIME_KEY, Date.now().toString());
+    } catch (_) {}
+  } else {
+    try {
+      sessionStorage.removeItem(SESSION_TOKEN_KEY);
+      sessionStorage.removeItem(SESSION_TIME_KEY);
+    } catch (_) {}
+  }
 };
 
 export const logout = async () => {
   await signOut(auth);
   cachedAccessToken = null;
+  try {
+    sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    sessionStorage.removeItem(SESSION_TIME_KEY);
+  } catch (_) {}
 };
 
 // Storage helper for linked Spreadsheet ID & URL
@@ -240,11 +286,43 @@ export async function syncAllTransactionsToSheet(
   transactions: Transaction[],
   sheetTitle = 'Transaksi'
 ): Promise<{ rowCount: number }> {
-  // First ensure sheet exists or use first available sheet
+  // First ensure sheet exists or create it
   const verify = await verifySpreadsheet(token, spreadsheetId);
-  const targetSheet = verify.sheets.includes(sheetTitle)
+  let targetSheet = verify.sheets.includes(sheetTitle)
     ? sheetTitle
     : verify.sheets[0] || 'Sheet1';
+
+  // If Transaksi tab doesn't exist, create it so data is neatly organized
+  if (!verify.sheets.includes(sheetTitle)) {
+    try {
+      const addRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            requests: [
+              {
+                addSheet: {
+                  properties: {
+                    title: sheetTitle,
+                  },
+                },
+              },
+            ],
+          }),
+        }
+      );
+      if (addRes.ok) {
+        targetSheet = sheetTitle;
+      }
+    } catch (_) {
+      // Fallback to first available sheet if creation fails
+    }
+  }
 
   // Sort chronological
   const sorted = [...transactions].sort(
@@ -257,8 +335,8 @@ export async function syncAllTransactionsToSheet(
       const rowNum = idx + 2;
       const formulaSaldo =
         rowNum === 2
-          ? `=IF(B2="pemasukan", D2, -D2)`
-          : `=IF(B${rowNum}="pemasukan", G${rowNum - 1}+D${rowNum}, G${rowNum - 1}-D${rowNum})`;
+          ? `=IF(LOWER(B2)="pemasukan", D2, -D2)`
+          : `=IF(LOWER(B${rowNum})="pemasukan", G${rowNum - 1}+D${rowNum}, G${rowNum - 1}-D${rowNum})`;
 
       return [
         formatToWibString(t.timestamp),
@@ -275,7 +353,7 @@ export async function syncAllTransactionsToSheet(
 
   // Clear existing values to prevent leftover rows
   await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${targetSheet}!A:H:clear`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${targetSheet}'!A:H:clear`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -284,7 +362,7 @@ export async function syncAllTransactionsToSheet(
 
   // Write all rows
   const putRes = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${targetSheet}!A1?valueInputOption=USER_ENTERED`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${targetSheet}'!A1?valueInputOption=USER_ENTERED`,
     {
       method: 'PUT',
       headers: {
@@ -292,7 +370,7 @@ export async function syncAllTransactionsToSheet(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        range: `${targetSheet}!A1`,
+        range: `'${targetSheet}'!A1`,
         majorDimension: 'ROWS',
         values: rows,
       }),
@@ -305,6 +383,66 @@ export async function syncAllTransactionsToSheet(
   }
 
   return { rowCount: transactions.length };
+}
+
+/**
+ * Reads all transactions directly from the linked Google Spreadsheet.
+ * Useful for pulling recent updates or offline edits back into the app database.
+ */
+export async function readTransactionsFromSheet(
+  token: string,
+  spreadsheetId: string,
+  sheetTitle = 'Transaksi'
+): Promise<Transaction[]> {
+  const verify = await verifySpreadsheet(token, spreadsheetId);
+  const targetSheet = verify.sheets.includes(sheetTitle)
+    ? sheetTitle
+    : verify.sheets[0] || 'Sheet1';
+
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/'${targetSheet}'!A2:H?valueRenderOption=FORMATTED_VALUE`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error?.message || 'Gagal membaca data dari Google Sheet.');
+  }
+
+  const data = await res.json();
+  const rows: string[][] = data.values || [];
+  const parsedList: Transaction[] = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || r.length === 0) continue;
+
+    const dateStr = r[0] || '';
+    const rawType = (r[1] || 'pengeluaran').toLowerCase();
+    const type: TransactionType = rawType.includes('masuk') ? 'pemasukan' : 'pengeluaran';
+    const category = r[2] || 'Lainnya';
+    const rawAmount = String(r[3] || '0').replace(/[^0-9]/g, '');
+    const amount = parseInt(rawAmount, 10) || 0;
+    const description = r[4] || 'Transaksi';
+    const rawMessage = r[5] || '';
+    const id = r[7] || `tx-gsheet-${Date.now()}-${i}`;
+
+    if (amount > 0) {
+      parsedList.push({
+        id,
+        type,
+        amount,
+        description,
+        category,
+        timestamp: dateStr || new Date().toISOString(),
+        rawMessage,
+      });
+    }
+  }
+
+  return parsedList;
 }
 
 /**
