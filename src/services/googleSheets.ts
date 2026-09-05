@@ -86,11 +86,14 @@ export const logout = async () => {
 };
 
 // Storage helper for linked Spreadsheet ID & URL
+export const PRIMARY_SPREADSHEET_ID = '1w7BDRLWI9qHFL0FJxrvBPEbDkifDOCJdvVlr_c5PM_A';
+export const PRIMARY_SPREADSHEET_URL = `https://docs.google.com/spreadsheets/d/${PRIMARY_SPREADSHEET_ID}/edit`;
+
 const SHEET_ID_STORAGE_KEY = 'telegram_keuangan_gsheet_id';
 const SHEET_NAME_STORAGE_KEY = 'telegram_keuangan_gsheet_name';
 
-export function getSavedSpreadsheetId(): string | null {
-  return localStorage.getItem(SHEET_ID_STORAGE_KEY);
+export function getSavedSpreadsheetId(): string {
+  return localStorage.getItem(SHEET_ID_STORAGE_KEY) || PRIMARY_SPREADSHEET_ID;
 }
 
 export function saveSpreadsheetInfo(id: string, name: string) {
@@ -99,7 +102,7 @@ export function saveSpreadsheetInfo(id: string, name: string) {
 }
 
 export function getSavedSpreadsheetName(): string {
-  return localStorage.getItem(SHEET_NAME_STORAGE_KEY) || 'Pembukuan Keuangan Telegram';
+  return localStorage.getItem(SHEET_NAME_STORAGE_KEY) || 'Pembukuan Keuangan Utama';
 }
 
 export function clearSpreadsheetInfo() {
@@ -126,13 +129,14 @@ function formatToWibString(isoString: string): string {
 }
 
 const DEFAULT_HEADERS = [
-  'ID Transaksi',
-  'Waktu (WIB)',
+  'Tanggal (WIB)',
   'Tipe',
   'Kategori',
-  'Keterangan',
   'Nominal (Rp)',
-  'Teks Asli',
+  'Keterangan',
+  'Pesan Asli',
+  'Saldo Berjalan',
+  'ID Transaksi',
 ];
 
 /**
@@ -249,20 +253,29 @@ export async function syncAllTransactionsToSheet(
 
   const rows: (string | number)[][] = [
     DEFAULT_HEADERS,
-    ...sorted.map((t) => [
-      t.id,
-      formatToWibString(t.timestamp),
-      t.type === 'pemasukan' ? 'Pemasukan (🟢)' : 'Pengeluaran (🔴)',
-      t.category,
-      t.description,
-      t.amount,
-      t.rawMessage || '',
-    ]),
+    ...sorted.map((t, idx) => {
+      const rowNum = idx + 2;
+      const formulaSaldo =
+        rowNum === 2
+          ? `=IF(B2="pemasukan", D2, -D2)`
+          : `=IF(B${rowNum}="pemasukan", G${rowNum - 1}+D${rowNum}, G${rowNum - 1}-D${rowNum})`;
+
+      return [
+        formatToWibString(t.timestamp),
+        t.type,
+        t.category,
+        t.amount,
+        t.description,
+        t.rawMessage || '',
+        formulaSaldo,
+        t.id,
+      ];
+    }),
   ];
 
   // Clear existing values to prevent leftover rows
   await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${targetSheet}!A:G:clear`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${targetSheet}!A:H:clear`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
@@ -301,20 +314,27 @@ export async function appendTransactionToSheet(
   token: string,
   spreadsheetId: string,
   t: Transaction,
-  sheetTitle = 'Transaksi'
+  sheetTitle = 'Transaksi',
+  estimatedRow = 2
 ): Promise<void> {
+  const formulaSaldo =
+    estimatedRow === 2
+      ? `=IF(B2="pemasukan", D2, -D2)`
+      : `=IF(B${estimatedRow}="pemasukan", G${estimatedRow - 1}+D${estimatedRow}, G${estimatedRow - 1}-D${estimatedRow})`;
+
   const row = [
-    t.id,
     formatToWibString(t.timestamp),
-    t.type === 'pemasukan' ? 'Pemasukan (🟢)' : 'Pengeluaran (🔴)',
+    t.type,
     t.category,
-    t.description,
     t.amount,
+    t.description,
     t.rawMessage || '',
+    formulaSaldo,
+    t.id,
   ];
 
   const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetTitle}!A:G:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${sheetTitle}!A:H:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
     {
       method: 'POST',
       headers: {

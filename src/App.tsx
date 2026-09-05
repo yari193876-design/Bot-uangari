@@ -129,6 +129,23 @@ export default function App() {
       if (result) {
         setAuthUser(result.user);
         setAuthToken(result.accessToken);
+        // Langsung pindahkan dan sinkronkan semua data transaksi yang sudah ada ke spreadsheet utama
+        if (spreadsheetId) {
+          try {
+            setIsSyncingGoogleSheets(true);
+            const res = await fetch('/api/transactions');
+            const data = await res.json();
+            const txList = data.transactions || transactions;
+            if (txList.length > 0) {
+              await syncAllTransactionsToSheet(result.accessToken, spreadsheetId, txList);
+              setLastSyncTime(new Date());
+            }
+          } catch (syncErr) {
+            console.warn('Initial sync after Google login:', syncErr);
+          } finally {
+            setIsSyncingGoogleSheets(false);
+          }
+        }
       }
     } catch (err) {
       console.error('Login error:', err);

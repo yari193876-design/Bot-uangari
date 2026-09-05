@@ -22,6 +22,10 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const DATA_FILE = path.join(DATA_DIR, "transactions.json");
 const BACKUP_FILE = path.join(DATA_DIR, "transactions.bak.json");
 
+// Dedicated Google Spreadsheet ID & URL
+export const TARGET_SPREADSHEET_ID = "1w7BDRLWI9qHFL0FJxrvBPEbDkifDOCJdvVlr_c5PM_A";
+export const TARGET_SPREADSHEET_URL = `https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}/edit`;
+
 function loadTransactions(): StoredTransaction[] {
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -934,7 +938,32 @@ async function processMessage(userMessage: string): Promise<{
     return { reply: formatRekapMingguanReply(summary), isRekap: true };
   }
 
-  // 3. Fast heuristic check (Daily rekap, greetings, quick shortcuts)
+  // 3. Dedicated check for Google Spreadsheet command
+  const isSheetCmd =
+    lower === "sheet" ||
+    lower === "/sheet" ||
+    lower === "spreadsheet" ||
+    lower === "/spreadsheet" ||
+    lower === "link sheet" ||
+    lower === "excel" ||
+    lower.includes("google sheet") ||
+    lower.includes("link spreadsheet");
+
+  if (isSheetCmd) {
+    return {
+      reply: `📊 *Google Spreadsheet Keuangan (Utama)*
+━━━━━━━━━━━━━━━━━━━━
+🔗 *Link Spreadsheet Langsung:*
+${TARGET_SPREADSHEET_URL}
+
+📋 *ID Sheet:* \`${TARGET_SPREADSHEET_ID}\`
+📌 *Total Transaksi:* ${transactions.length} transaksi
+
+_Semua data transaksi tersimpan dan disinkronkan secara eksklusif ke spreadsheet ini._ 👍`,
+    };
+  }
+
+  // 4. Fast heuristic check (Daily rekap, greetings, quick shortcuts)
   const heuristic = parseIndonesianHeuristic(userMessage);
 
   if (heuristic) {
@@ -1281,6 +1310,15 @@ async function startServer() {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="catatan-keuangan-${new Date().toISOString().slice(0, 10)}.csv"`);
     res.send(csvContent);
+  });
+
+  // Google Spreadsheet Info endpoint
+  app.get("/api/spreadsheet/info", (_req, res) => {
+    res.json({
+      spreadsheetId: TARGET_SPREADSHEET_ID,
+      spreadsheetUrl: TARGET_SPREADSHEET_URL,
+      totalTransactions: transactions.length,
+    });
   });
 
   // Real Telegram Webhook & Polling Support with 24/7 Watchdog Supervisor

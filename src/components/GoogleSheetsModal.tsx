@@ -19,6 +19,8 @@ import {
   syncAllTransactionsToSheet,
   saveSpreadsheetInfo,
   clearSpreadsheetInfo,
+  PRIMARY_SPREADSHEET_ID,
+  PRIMARY_SPREADSHEET_URL,
 } from '../services/googleSheets';
 import { Transaction } from '../types';
 
@@ -213,20 +215,35 @@ export default function GoogleSheetsModal({
           {/* Section 1: Google Account Authentication */}
           {!user ? (
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 text-center space-y-3">
-              <div className="w-12 h-12 rounded-full bg-white shadow-2xs border border-slate-200 mx-auto flex items-center justify-center">
-                <ShieldCheck className="w-6 h-6 text-emerald-600" />
+              <div className="w-12 h-12 rounded-full bg-emerald-100 text-emerald-700 shadow-2xs border border-emerald-200 mx-auto flex items-center justify-center">
+                <FileSpreadsheet className="w-6 h-6" />
               </div>
               <div>
                 <h3 className="text-sm font-bold text-slate-800">
-                  Sambungkan Akun Google Anda
+                  Sinkronisasi ke Google Spreadsheet Utama
                 </h3>
-                <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
-                  Hubungkan akun Google Anda untuk membuat atau memperbarui spreadsheet pencatatan keuangan secara otomatis.
+                <p className="text-xs text-slate-600 mt-1 max-w-md mx-auto">
+                  Semua transaksi akan dikhususkan dan disinkronkan ke Google Sheet pilihan Anda:
                 </p>
+                <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-emerald-300 rounded-xl text-xs font-mono text-emerald-800 shadow-2xs max-w-full truncate">
+                  <span className="font-sans font-bold text-slate-500">ID:</span>
+                  <span className="truncate">{PRIMARY_SPREADSHEET_ID}</span>
+                </div>
+                <div className="mt-1">
+                  <a
+                    href={PRIMARY_SPREADSHEET_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 hover:text-emerald-800 underline"
+                  >
+                    <span>Buka Spreadsheet di Tab Baru</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
               </div>
 
               {/* Official Google Sign-In button */}
-              <div className="pt-2 flex justify-center">
+              <div className="pt-2 flex flex-col items-center gap-2">
                 <button
                   type="button"
                   id="google-signin-btn"
@@ -252,8 +269,11 @@ export default function GoogleSheetsModal({
                       d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"
                     />
                   </svg>
-                  <span>{isLoggingIn ? 'Menghubungkan...' : 'Sign in with Google'}</span>
+                  <span>{isLoggingIn ? 'Menghubungkan Akun Google...' : 'Sign in with Google untuk Sinkronkan Data'}</span>
                 </button>
+                <p className="text-[11px] text-slate-500">
+                  Setelah login, {transactions.length} transaksi yang ada akan otomatis dipindahkan ke sheet ini.
+                </p>
               </div>
             </div>
           ) : (
@@ -496,10 +516,10 @@ export default function GoogleSheetsModal({
           <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-500 space-y-2">
             <div className="font-bold text-slate-700 flex items-center gap-1.5">
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Format Kolom Otomatis:</span>
+              <span>Struktur Kolom & Formula Saldo Otomatis:</span>
             </div>
-            <p className="text-[11px] leading-relaxed text-slate-500">
-              Setiap transaksi akan memuat <strong>ID Transaksi</strong>, <strong>Waktu (WIB)</strong>, <strong>Tipe (Pemasukan/Pengeluaran)</strong>, <strong>Kategori</strong>, <strong>Keterangan</strong>, <strong>Nominal</strong>, dan <strong>Teks Asli Chat</strong>.
+            <p className="text-[11px] leading-relaxed text-slate-600">
+              Setiap baris memuat: <strong>Tanggal (WIB)</strong>, <strong>Tipe</strong>, <strong>Kategori</strong>, <strong>Nominal (Rp)</strong>, <strong>Keterangan</strong>, <strong>Pesan Asli</strong>, <strong>Saldo Berjalan</strong> (dihitung murni menggunakan formula Spreadsheet <code>=IF(...)</code>), dan <strong>ID Transaksi</strong>.
             </p>
           </div>
         </div>
